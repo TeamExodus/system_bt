@@ -58,7 +58,7 @@ static const interop_addr_t interop_addr_database[] = {
 
   // BMW car kits (Harman/Becker)
   {{0x9c, 0xdf, 0x03,       0,0,0}, 3, INTEROP_AUTO_RETRY_PAIRING},
-  
+
   // Ausdom M05 - unacceptably loud volume
   {{0xa0, 0xe9, 0xdb,       0,0,0}, 3, INTEROP_DISABLE_ABSOLUTE_VOLUME},
 

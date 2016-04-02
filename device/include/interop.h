@@ -58,7 +58,6 @@ typedef enum {
   //Few carkits take long time to start sending AT commands
   //Increase AG_CONN TIMEOUT so that AG connection go through
   INTEROP_INCREASE_AG_CONN_TIMEOUT,
-
   // Devices requiring this workaround do not handle Bluetooth Absolute Volume
   // control correctly, leading to undesirable (potentially harmful) volume levels
   // or general lack of controlability.
