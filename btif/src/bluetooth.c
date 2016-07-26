@@ -62,8 +62,6 @@
 #include "stack_manager.h"
 #include "btif_config.h"
 #include "btif_storage.h"
-#include "l2cdefs.h"
-#include "l2c_api.h"
 
 #if TEST_APP_INTERFACE == TRUE
 #include <bt_testapp.h>
