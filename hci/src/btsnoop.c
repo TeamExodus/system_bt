@@ -224,7 +224,6 @@ static void btsnoop_write(const void *data, size_t length) {
     /* skip writing to file if external client is connected*/
     return;
   }
-
   if (logfile_fd != INVALID_FD)
     TEMP_FAILURE_RETRY(write(logfile_fd, data, length));
 }
