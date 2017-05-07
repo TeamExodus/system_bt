@@ -1007,18 +1007,20 @@ tBTM_STATUS btm_sec_bond_by_transport (BD_ADDR bd_addr, tBT_TRANSPORT transport,
     BTM_TRACE_DEBUG ("before update sec_flags=0x%x", p_dev_rec->sec_flags);
 
     /* Finished if connection is active and already paired */
-    if ( ((p_dev_rec->hci_handle != BTM_SEC_INVALID_HANDLE) && transport == BT_TRANSPORT_BR_EDR
+    if ((p_dev_rec->hci_handle != BTM_SEC_INVALID_HANDLE) && transport == BT_TRANSPORT_BR_EDR
          &&  (p_dev_rec->sec_flags & BTM_SEC_AUTHENTICATED))
-#if (BLE_INCLUDED == TRUE)
-        ||((p_dev_rec->ble_hci_handle != BTM_SEC_INVALID_HANDLE) && transport == BT_TRANSPORT_LE
-         &&  (p_dev_rec->sec_flags & BTM_SEC_LE_AUTHENTICATED))
-#endif
-
-         )
     {
         BTM_TRACE_WARNING("BTM_SecBond -> Already Paired");
         return(BTM_SUCCESS);
     }
+#if (BLE_INCLUDED == TRUE)
+    if ((p_dev_rec->ble_hci_handle != BTM_SEC_INVALID_HANDLE) && transport == BT_TRANSPORT_LE
+         &&  (p_dev_rec->sec_flags & BTM_SEC_LE_AUTHENTICATED))
+    {
+        BTM_TRACE_WARNING("BTM_SecBond. Last Pairing still in progress. Wait!");
+        return(BTM_CMD_STARTED);
+    }
+#endif
 
     /* Tell controller to get rid of the link key if it has one stored */
     if ((BTM_DeleteStoredLinkKey (bd_addr, NULL)) != BTM_SUCCESS)
@@ -3203,6 +3205,12 @@ void btm_sec_rmt_name_request_complete (UINT8 *p_bd_addr, UINT8 *p_bd_name, UINT
                     return;
                 }
             }
+            else if (status == HCI_ERR_CONTROLLER_BUSY)
+            {
+                BTM_TRACE_WARNING ("btm_sec_rmt_name_request_complete() Wait for incoming connection");
+                p_dev_rec->rnr_retry_cnt = 0;
+                return;
+            }
             else
             {
                 BTM_TRACE_EVENT ("btm_sec_rmt_name_request_complete() reset RNR retry count ");
@@ -4116,7 +4124,7 @@ void btm_sec_auth_complete (UINT16 handle, UINT8 status)
     if (btm_cb.api.p_auth_complete_callback)
     {
         /* report the authentication status */
-        /* don't post auth status for key missing cases as stack may retry for security */
+        /* don't post auth status for collision, key missing cases as stack may retry for security */
         if ((old_state != BTM_PAIR_STATE_IDLE) || ((status != HCI_SUCCESS) &&
             (status != HCI_ERR_KEY_MISSING)))
             (*btm_cb.api.p_auth_complete_callback) (p_dev_rec->bd_addr,
@@ -4148,12 +4156,10 @@ void btm_sec_auth_complete (UINT16 handle, UINT8 status)
             {
                 BTM_TRACE_DEBUG ("link encrypted afer dedic bonding can use SMP_BR_CHNL");
 
-                if (btm_sec_is_master(p_dev_rec))
-                {
-                    // Encryption is required to start SM over BR/EDR
-                    // indicate that this is encryption after authentication
-                    BTM_SetEncryption(p_dev_rec->bd_addr, BT_TRANSPORT_BR_EDR, NULL, NULL, 0);
-                }
+                // Encryption is required to start SM over BR/EDR
+                // from DD bonding initiator.
+                // indicate that this is encryption after authentication
+                BTM_SetEncryption(p_dev_rec->bd_addr, BT_TRANSPORT_BR_EDR, NULL, NULL, 0);
             }
             l2cu_start_post_bond_timer (p_dev_rec->hci_handle);
         }
@@ -4297,11 +4303,16 @@ void btm_sec_encrypt_change (UINT16 handle, UINT8 status, UINT8 encr_enable)
 
     if (p_acl && p_acl->transport == BT_TRANSPORT_LE)
     {
-        if (status == HCI_ERR_KEY_MISSING || status == HCI_ERR_AUTH_FAILURE ||
+        if (status == HCI_ERR_AUTH_FAILURE ||
             status == HCI_ERR_ENCRY_MODE_NOT_ACCEPTABLE)
         {
             p_dev_rec->sec_flags &= ~ (BTM_SEC_LE_LINK_KEY_KNOWN);
             p_dev_rec->ble.key_type = BTM_LE_KEY_NONE;
+            GENERATE_VENDOR_LOGS();
+        }
+        else if (status == HCI_ERR_KEY_MISSING)
+        {
+            btm_sec_disconnect(handle, status);
         }
         btm_ble_link_encrypted(p_dev_rec->ble.pseudo_addr, encr_enable);
         return;
@@ -4357,6 +4368,7 @@ void btm_sec_encrypt_change (UINT16 handle, UINT8 status, UINT8 encr_enable)
 
                 BTM_TRACE_DEBUG("updated link key type to %d", p_dev_rec->link_key_type);
                 btm_send_link_key_notif(p_dev_rec);
+                GENERATE_VENDOR_LOGS();
             }
         }
     }
@@ -4478,10 +4490,10 @@ void btm_sec_connected (UINT8 *bda, UINT16 handle, UINT8 status, UINT8 enc_mode)
 #if (BT_USE_TRACES == TRUE)
     if (p_dev_rec)
     {
-        BTM_TRACE_EVENT ("Security Manager: btm_sec_connected in state: %s  handle:%d status:%d enc_mode:%d  bda:%x RName:%s",
+        BTM_TRACE_EVENT ("Security Manager: btm_sec_connected in state: %s  handle:%d status:%d enc_mode:%d  bda:%x RName:%s,new_encr_key_256 to %d",
                           btm_pair_state_descr(btm_cb.pairing_state), handle, status, enc_mode,
                           (bda[2]<<24)+(bda[3]<<16)+(bda[4]<<8)+bda[5],
-                          p_dev_rec->sec_bd_name);
+                          p_dev_rec->sec_bd_name,p_dev_rec->new_encryption_key_is_p256);
     }
     else
     {
@@ -4624,7 +4636,7 @@ void btm_sec_connected (UINT8 *bda, UINT16 handle, UINT8 status, UINT8 enc_mode)
             }
         }
         /* wait for incoming connection without resetting pairing state */
-        else if (status == HCI_ERR_CONNECTION_EXISTS)
+        else if ((status == HCI_ERR_CONNECTION_EXISTS) || (status ==  HCI_ERR_CONTROLLER_BUSY))
         {
             BTM_TRACE_WARNING ("Security Manager: btm_sec_connected: Wait for incoming connection");
             return;
@@ -4780,7 +4792,7 @@ void btm_sec_connected (UINT8 *bda, UINT16 handle, UINT8 status, UINT8 enc_mode)
     /* After connection is established we perform security if we do not know */
     /* the name, or if we are originator because some procedure can have */
     /* been scheduled while connection was down */
-    BTM_TRACE_DEBUG ("is_originator:%d ", p_dev_rec->is_originator);
+    BTM_TRACE_DEBUG ("is_originator:%d ,new_encr_key_256 to %d", p_dev_rec->is_originator,p_dev_rec->new_encryption_key_is_p256);
     return;
 }
 
@@ -4860,7 +4872,7 @@ void btm_sec_disconnected (UINT16 handle, UINT8 reason)
             "  remote_name:%s", __func__, p_dev_rec->security_required, btm_pair_state_descr(btm_cb.pairing_state),
             reason, bd_addr[0], bd_addr[1], bd_addr[2], bd_addr[3], bd_addr[4], bd_addr[5], p_dev_rec->sec_bd_name);
 
-    BTM_TRACE_EVENT("%s before update sec_flags=0x%x", __func__, p_dev_rec->sec_flags);
+    BTM_TRACE_EVENT("%s before update sec_flags=0x%x, new_encr_key_256 to %d ", __func__, p_dev_rec->sec_flags,p_dev_rec->new_encryption_key_is_p256);
 
     /* If we are in the process of bonding we need to tell client that auth failed */
     if ( (btm_cb.pairing_state != BTM_PAIR_STATE_IDLE)
@@ -4917,7 +4929,7 @@ void btm_sec_disconnected (UINT16 handle, UINT8 reason)
     p_dev_rec->security_required = BTM_SEC_NONE;
 
     p_callback = p_dev_rec->p_callback;
-
+    p_dev_rec->new_encryption_key_is_p256 = FALSE;
     /* if security is pending, send callback to clean up the security state */
     if(p_callback)
     {
@@ -4926,7 +4938,7 @@ void btm_sec_disconnected (UINT16 handle, UINT8 reason)
         (*p_callback) (p_dev_rec->bd_addr, transport, p_dev_rec->p_ref_data, BTM_ERR_PROCESSING);
     }
 
-    BTM_TRACE_EVENT("%s after update sec_flags=0x%x", __func__, p_dev_rec->sec_flags);
+    BTM_TRACE_EVENT("%s after update sec_flags=0x%x,new_encr_key_256 to %d", __func__, p_dev_rec->sec_flags,p_dev_rec->new_encryption_key_is_p256);
 }
 
 /*******************************************************************************
@@ -5213,6 +5225,23 @@ static void btm_sec_pairing_timeout(UNUSED_ATTR void *data)
         case BTM_PAIR_STATE_GET_REM_NAME:
             /* We need to notify the UI that timeout has happened while waiting for authentication*/
             btm_sec_change_pairing_state (BTM_PAIR_STATE_IDLE);
+            tL2C_LCB *p_lcb = l2cu_find_lcb_by_bd_addr (p_cb->pairing_bda, BT_TRANSPORT_BR_EDR);
+            /* If no channels on the connection, start idle timeout */
+            if ((p_lcb) && p_lcb->in_use && (p_lcb->link_state == LST_CONNECTED))
+            {
+                if (!p_lcb->ccb_queue.p_first_ccb)
+                {
+                    BTM_TRACE_WARNING("%s start idle timeout if no ccbs", __func__ );
+                    l2cu_no_dynamic_ccbs (p_lcb);
+                }
+                else
+                {
+                    BTM_TRACE_ERROR("%s hci disc triggered when last channel disconnects BDA: %08x%04x",
+                                __func__,
+                                (p_cb->pairing_bda[0]<<24) + (p_cb->pairing_bda[1]<<16) + (p_cb->pairing_bda[2]<<8) + p_cb->pairing_bda[3],
+                                (p_cb->pairing_bda[4] << 8) + p_cb->pairing_bda[5]);
+                }
+            }
             if (btm_cb.api.p_auth_complete_callback)
             {
                 if (p_dev_rec == NULL)

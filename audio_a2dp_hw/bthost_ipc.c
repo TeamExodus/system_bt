@@ -60,8 +60,11 @@ static int bt_split_a2dp_enabled = 0;
 /*****************************************************************************
 **  Constants & Macros
 ******************************************************************************/
-#define STREAM_START_MAX_RETRY_COUNT 80 /* Retry for 8sec to address IOT issue*/
-#define CTRL_CHAN_RETRY_COUNT 3
+/* Below two values adds up to 8 sec retry to address IOT issues*/
+#define STREAM_START_MAX_RETRY_COUNT 10
+#define STREAM_START_MAX_RETRY_LOOPER 8
+
+#define CTRL_CHAN_RETRY_COUNT 1
 #define USEC_PER_SEC 1000000L
 #define SOCK_SEND_TIMEOUT_MS 2000  /* Timeout for sending */
 #define SOCK_RECV_TIMEOUT_MS 5000  /* Timeout for receiving */
@@ -594,7 +597,7 @@ int a2dp_ctrl_receive(struct a2dp_stream_common *common, void* buffer, int lengt
             ERROR("ack failed: error(%s)", strerror(errno));
             break;
         }
-        if (i == (CTRL_CHAN_RETRY_COUNT - 1)) {
+        if (i == (CTRL_CHAN_RETRY_COUNT + 1)) {
             ERROR("ack failed: max retry count");
             break;
         }
@@ -767,7 +770,10 @@ void a2dp_open_ctrl_path(struct a2dp_stream_common *common)
         }
 
         /* ctrl channel not ready, wait a bit */
-        usleep(250000);
+        if (CTRL_CHAN_RETRY_COUNT > 1)
+        {
+            usleep(250000);
+        }
     }
 }
 
@@ -799,7 +805,7 @@ void a2dp_stream_common_init(struct a2dp_stream_common *common)
 int start_audio_datapath(struct a2dp_stream_common *common)
 {
     INFO("state %d", common->state);
-
+    int ret = 0;
     #ifdef BT_AUDIO_SYSTRACE_LOG
     char trace_buf[512];
     #endif
@@ -828,11 +834,13 @@ int start_audio_datapath(struct a2dp_stream_common *common)
     if (a2dp_status < 0)
     {
         ERROR("%s Audiopath start failed (status %d)", __func__, a2dp_status);
+        ret = -1;
         goto error;
     }
     else if (a2dp_status == A2DP_CTRL_ACK_INCALL_FAILURE)
     {
         ERROR("%s Audiopath start failed - in call, move to suspended", __func__);
+        ret = a2dp_status;
         goto error;
     }
     if (!bt_split_a2dp_enabled)
@@ -858,7 +866,10 @@ int start_audio_datapath(struct a2dp_stream_common *common)
     return 0;
 error:
     common->state = oldstate;
-    return -1;
+    if (bt_split_a2dp_enabled)
+        return ret;
+    else
+        return -1;
 }
 
 int stop_audio_datapath(struct a2dp_stream_common *common)
@@ -954,12 +965,14 @@ int audio_open_ctrl_path()
 
 int audio_start_stream()
 {
-    int i;
+    int i, status, j;
     INFO("%s: state = %s",__func__,dump_a2dp_hal_state(audio_stream.state));
 
+    pthread_mutex_lock(&audio_stream.lock);
     if (audio_stream.state == AUDIO_A2DP_STATE_SUSPENDED)
     {
         INFO("stream suspended");
+        pthread_mutex_unlock(&audio_stream.lock);
         return -1;
     }
     /* Sanity check if the ctrl_fd is valid. If audio_stream_close is not called
@@ -971,30 +984,54 @@ int audio_start_stream()
         if (audio_stream.ctrl_fd != AUDIO_SKT_DISCONNECTED)
         {
             ERROR("BTIF is not ready to start stream");
+            pthread_mutex_unlock(&audio_stream.lock);
             return -1;
         }
         /* Try to start stream to recover from ctrl skt disconnect*/
     }
-    for (i = 0; i < STREAM_START_MAX_RETRY_COUNT; i++)
-    {
-        if (start_audio_datapath(&audio_stream) == 0)
+
+    for (j = 0; j <STREAM_START_MAX_RETRY_LOOPER; j++) {
+        for (i = 0; i < STREAM_START_MAX_RETRY_COUNT; i++)
         {
-            INFO("a2dp stream started successfully");
-            break;
+            status = start_audio_datapath(&audio_stream);
+            if (status == A2DP_CTRL_ACK_SUCCESS)
+            {
+                INFO("a2dp stream started successfully");
+                goto end;
+            }
+            else if (status == A2DP_CTRL_ACK_INCALL_FAILURE)
+            {
+                INFO("a2dp stream start failed: call in progress");
+                goto end;
+            }
+            if (audio_stream.ctrl_fd == AUDIO_SKT_DISCONNECTED)
+            {
+                audio_stream.state = AUDIO_A2DP_STATE_STOPPED;
+                INFO("control path is disconnected");
+                goto end;
+            }
+            INFO("%s: a2dp stream not started,wait 100mse & retry", __func__);
+            usleep(100000);
         }
-        if (audio_stream.ctrl_fd == AUDIO_SKT_DISCONNECTED)
-        {
-            INFO("control path is disconnected");
-            break;
+        INFO("%s: Check if valid connection is still up or not", __func__);
+
+        // For every 1 sec check if a2dp is still up, to avoid
+        // blocking the audio thread forever if a2dp connection is closed
+        // for some reason
+        if (check_a2dp_open_ready (&audio_stream) < 0) {
+            ERROR("%s: No valid a2dp connection\n", __func__);
+            pthread_mutex_unlock(&audio_stream.lock);
+            return -1;
         }
-        INFO("%s: a2dp stream not started,wait 100mse & retry", __func__);
-        usleep(100000);
     }
+end:
     if (audio_stream.state != AUDIO_A2DP_STATE_STARTED)
     {
-        ERROR("Failed to start a2dp stream");
+        ERROR("%s: Failed to start a2dp stream", __func__);
+        pthread_mutex_unlock(&audio_stream.lock);
         return -1;
     }
+    pthread_mutex_unlock(&audio_stream.lock);
     return 0;
 }
 
@@ -1009,7 +1046,7 @@ int audio_stream_open()
         INFO("control path open successful");
         /*Delay to ensure Headset is in proper state when START is initiated
         from DUT immediately after the connection due to ongoing music playback. */
-        usleep(250000);
+        usleep(1000000);
         a2dp_command(&audio_stream,A2DP_CTRL_CMD_OFFLOAD_SUPPORTED);
         return 0;
     }
@@ -1023,6 +1060,7 @@ int audio_stream_close()
 {
     INFO("%s",__func__);
 
+    pthread_mutex_lock(&audio_stream.lock);
     if (audio_stream.state == AUDIO_A2DP_STATE_STARTED ||
         audio_stream.state == AUDIO_A2DP_STATE_STOPPING)
     {
@@ -1032,46 +1070,57 @@ int audio_stream_close()
 
     skt_disconnect(audio_stream.ctrl_fd);
     audio_stream.ctrl_fd = AUDIO_SKT_DISCONNECTED;
+    pthread_mutex_unlock(&audio_stream.lock);
     return 0;
 }
 int audio_stop_stream()
 {
     INFO("%s",__func__);
+    pthread_mutex_lock(&audio_stream.lock);
     if (suspend_audio_datapath(&audio_stream, true) == 0)
     {
         INFO("audio stop stream successful");
+        pthread_mutex_unlock(&audio_stream.lock);
         return 0;
     }
     audio_stream.state = AUDIO_A2DP_STATE_STOPPED;
+    pthread_mutex_unlock(&audio_stream.lock);
     return -1;
 }
 
 int audio_suspend_stream()
 {
     INFO("%s",__func__);
+    pthread_mutex_lock(&audio_stream.lock);
     if (suspend_audio_datapath(&audio_stream, false) == 0)
     {
         INFO("audio start stream successful");
+        pthread_mutex_unlock(&audio_stream.lock);
         return 0;
     }
+    pthread_mutex_unlock(&audio_stream.lock);
     return -1;
 }
 
 void audio_handoff_triggered()
 {
     INFO("%s state = %s",__func__,dump_a2dp_hal_state(audio_stream.state));
+    pthread_mutex_lock(&audio_stream.lock);
     if (audio_stream.state != AUDIO_A2DP_STATE_STOPPED ||
         audio_stream.state != AUDIO_A2DP_STATE_STOPPING)
     {
         audio_stream.state = AUDIO_A2DP_STATE_STOPPED;
     }
+    pthread_mutex_unlock(&audio_stream.lock);
 }
 
 void clear_a2dpsuspend_flag()
 {
     INFO("%s: state = %s",__func__,dump_a2dp_hal_state(audio_stream.state));
+    pthread_mutex_lock(&audio_stream.lock);
     if (audio_stream.state == AUDIO_A2DP_STATE_SUSPENDED)
         audio_stream.state = AUDIO_A2DP_STATE_STOPPED;
+    pthread_mutex_unlock(&audio_stream.lock);
 }
 
 void * audio_get_codec_config(uint8_t *multicast_status, uint8_t *num_dev,
@@ -1079,24 +1128,44 @@ void * audio_get_codec_config(uint8_t *multicast_status, uint8_t *num_dev,
 {
     INFO("%s: state = %s",__func__,dump_a2dp_hal_state(audio_stream.state));
 
+    pthread_mutex_lock(&audio_stream.lock);
     a2dp_get_multicast_status(&audio_stream, multicast_status,num_dev);
 
     DEBUG("got multicast status = %d dev = %d",*multicast_status,*num_dev);
     if (a2dp_read_codec_config(&audio_stream, 0) == 0)
     {
+        pthread_mutex_unlock(&audio_stream.lock);
         return (a2dp_codec_parser(&audio_stream.codec_cfg[0], codec_type));
     }
+    pthread_mutex_unlock(&audio_stream.lock);
     return NULL;
 }
 
 void* audio_get_next_codec_config(uint8_t idx, audio_format_t *codec_type)
 {
     INFO("%s",__func__);
+    pthread_mutex_lock(&audio_stream.lock);
     if (a2dp_read_codec_config(&audio_stream,idx) == 0)
     {
+        pthread_mutex_unlock(&audio_stream.lock);
         return a2dp_codec_parser(&audio_stream.codec_cfg[0], codec_type);
     }
+    pthread_mutex_unlock(&audio_stream.lock);
     return NULL;
+}
+
+int audio_check_a2dp_ready()
+{
+    INFO("audio_check_a2dp_ready: state %s", dump_a2dp_hal_state(audio_stream.state));
+    pthread_mutex_lock(&audio_stream.lock);
+    if (a2dp_command(&audio_stream, A2DP_CTRL_CMD_CHECK_READY) != 0)
+    {
+        INFO("audio_check_a2dp_ready: FAIL");
+        pthread_mutex_unlock(&audio_stream.lock);
+        return 0;
+    }
+    pthread_mutex_unlock(&audio_stream.lock);
+    return 1;
 }
 //Entry point for dynamic lib
 const bt_host_ipc_interface_t BTHOST_IPC_INTERFACE = {
@@ -1121,5 +1190,6 @@ const bt_host_ipc_interface_t BTHOST_IPC_INTERFACE = {
     audio_get_codec_config,
     audio_handoff_triggered,
     clear_a2dpsuspend_flag,
-    audio_get_next_codec_config
+    audio_get_next_codec_config,
+    audio_check_a2dp_ready
 };

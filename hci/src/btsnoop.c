@@ -93,9 +93,11 @@ static future_t *start_up(void) {
 
   module_started = true;
   stack_config->get_btsnoop_ext_options(&hci_ext_dump_enabled, &btsnoop_conf_from_file);
+#ifdef BLUEDROID_DEBUG
   if (btsnoop_conf_from_file == false) {
     hci_ext_dump_enabled = true;
   }
+#endif
   update_logging();
 
   return NULL;
@@ -174,15 +176,16 @@ static uint64_t btsnoop_timestamp(void) {
   tv.tv_sec += gmt_offset;
 
   // Timestamp is in microseconds.
-  uint64_t timestamp = tv.tv_sec * 1000 * 1000LL;
+  uint64_t timestamp = ((uint64_t)tv.tv_sec) * 1000 * 1000LL;
   timestamp += tv.tv_usec;
   timestamp += BTSNOOP_EPOCH_DELTA;
   return timestamp;
 }
 
 static void update_logging() {
+  bool btsnoop_log_output = stack_config->get_btsnoop_turned_on();
   bool should_log = module_started &&
-    (logging_enabled_via_api || stack_config->get_btsnoop_turned_on() || hci_ext_dump_enabled);
+    (logging_enabled_via_api || btsnoop_log_output || hci_ext_dump_enabled);
 
   if (should_log == is_logging)
     return;
@@ -190,10 +193,15 @@ static void update_logging() {
   is_logging = should_log;
   if (should_log) {
     btsnoop_net_open();
-
-    if (hci_ext_dump_enabled == true) {
-      START_SNOOP_LOGGING();
+#ifdef BLUEDROID_DEBUG
+    if(!btsnoop_log_output)
+#endif
+    {
+      if (logging_enabled_via_api || hci_ext_dump_enabled == true) {
+        START_SNOOP_LOGGING();
+      }
     }
+
     const char *log_path = stack_config->get_btsnoop_log_path();
 
     // Save the old log if configured to do so
@@ -205,12 +213,15 @@ static void update_logging() {
         LOG_ERROR(LOG_TAG, "%s unable to rename '%s' to '%s': %s", __func__, log_path, last_log_path, strerror(errno));
     }
 
+    mode_t prevmask = umask(0);
     logfile_fd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
     if (logfile_fd == INVALID_FD) {
       LOG_ERROR(LOG_TAG, "%s unable to open '%s': %s", __func__, log_path, strerror(errno));
       is_logging = false;
+      umask(prevmask);
       return;
     }
+    umask(prevmask);
 
     write(logfile_fd, "btsnoop\0\0\0\0\1\0\0\x3\xea", 16);
   } else {

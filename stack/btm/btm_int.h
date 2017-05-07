@@ -833,6 +833,7 @@ typedef struct
     UINT16                  ediv;       /* received ediv value from LTK request */
     UINT8                   key_size;
     tBTM_BLE_VSC_CB         cmn_ble_vsc_cb;
+    tBTM_BLE_ADV_EXT_CB     ble_adv_ext_cb;
 #endif
 
                                             /* Packet types supported by the local device */
@@ -952,7 +953,7 @@ extern void         btm_process_cancel_complete(UINT8 status, UINT8 mode);
 extern void         btm_event_filter_complete (UINT8 *p);
 extern void         btm_inq_stop_on_ssp(void);
 extern void         btm_inq_clear_ssp(void);
-extern tINQ_DB_ENT *btm_inq_db_find (BD_ADDR p_bda);
+extern tINQ_DB_ENT *btm_inq_db_find (const BD_ADDR p_bda);
 extern BOOLEAN      btm_inq_find_bdaddr (BD_ADDR p_bda);
 
 extern BOOLEAN btm_lookup_eir(BD_ADDR_PTR p_rem_addr);
@@ -999,7 +1000,7 @@ extern void         btm_establish_continue (tACL_CONN *p_acl_cb);
 extern void         btm_acl_chk_peer_pkt_type_support (tACL_CONN *p, UINT16 *p_pkt_type);
 /* Read maximum data packet that can be sent over current connection */
 extern UINT16 btm_get_max_packet_size (BD_ADDR addr);
-extern tACL_CONN *btm_bda_to_acl (BD_ADDR bda, tBT_TRANSPORT transport);
+extern tACL_CONN *btm_bda_to_acl (const BD_ADDR bda, tBT_TRANSPORT transport);
 extern BOOLEAN    btm_acl_notif_conn_collision (BD_ADDR bda);
 
 extern void btm_pm_reset(void);
@@ -1057,6 +1058,9 @@ extern BOOLEAN btm_ble_addr_resolvable(BD_ADDR rpa, tBTM_SEC_DEV_REC *p_dev_rec)
 extern tBTM_STATUS btm_ble_read_resolving_list_entry(tBTM_SEC_DEV_REC *p_dev_rec);
 extern BOOLEAN btm_ble_resolving_list_load_dev(tBTM_SEC_DEV_REC *p_dev_rec);
 extern void btm_ble_resolving_list_remove_dev(tBTM_SEC_DEV_REC *p_dev_rec);
+#if (defined BLE_EXTENDED_ADV_SUPPORT && (BLE_EXTENDED_ADV_SUPPORT == TRUE))
+extern BOOLEAN btm_ble_add_multi_adv_rpa(BD_ADDR bda, tBLE_ADDR_TYPE addr_type);
+#endif
 #endif  /* BLE_INCLUDED */
 
 /* HCI event handler */
@@ -1080,7 +1084,7 @@ extern BOOLEAN btm_dev_support_switch (BD_ADDR bd_addr);
 extern tBTM_SEC_DEV_REC  *btm_sec_allocate_dev_rec(void);
 extern tBTM_SEC_DEV_REC  *btm_sec_alloc_dev (BD_ADDR bd_addr);
 extern void               btm_sec_free_dev (tBTM_SEC_DEV_REC *p_dev_rec);
-extern tBTM_SEC_DEV_REC  *btm_find_dev (BD_ADDR bd_addr);
+extern tBTM_SEC_DEV_REC  *btm_find_dev (const BD_ADDR bd_addr);
 extern tBTM_SEC_DEV_REC  *btm_find_or_alloc_dev (BD_ADDR bd_addr);
 extern tBTM_SEC_DEV_REC  *btm_find_dev_by_handle (UINT16 handle);
 extern tBTM_BOND_TYPE     btm_get_bond_type_dev(BD_ADDR bd_addr);

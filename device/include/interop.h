@@ -25,13 +25,15 @@
 static const char INTEROP_MODULE[] = "interop_module";
 
 // NOTE:
-// Only add values at the end of this enum and do NOT delete values
-// as they may be used in dynamic device configuration.
+// Only add values at the end of this enum and before END_OF_INTEROP_LIST
+// do NOT delete values as they may be used in dynamic device configuration.
 typedef enum {
+
+  BEGINING_OF_INTEROP_LIST = 0,
   // Disable secure connections
   // This is for pre BT 4.1/2 devices that do not handle secure mode
   // very well.
-  INTEROP_DISABLE_LE_SECURE_CONNECTIONS = 0,
+  INTEROP_DISABLE_LE_SECURE_CONNECTIONS = BEGINING_OF_INTEROP_LIST,
 
   // Some devices have proven problematic during the pairing process, often
   // requiring multiple retries to complete pairing. To avoid degrading the user
@@ -106,10 +108,50 @@ typedef enum {
   // devices, we would like to blacklist them and advertise AVRCP version as 1.3
   INTEROP_ADV_AVRCP_VER_1_3,
 
-  // Disable profile connection for headsets/car-kits
-  // Some car kits going bad state when DUT initiate profile connection in collision scenerio
-  // Hence don't initaite profile level connections and wait for incoming connetcion
-  INTEROP_DISABLE_CONNECTION_AFTER_COLLISION,
+  // certain remote A2DP sinks have issue playing back Music in AAC format.
+  // disable AAC for those headsets so that it switch to SBC
+  INTEROP_DISABLE_AAC_CODEC,
+
+  // Some car kits notifies role switch supported but it rejects
+  // the role switch and after some attempts of role switch
+  // car kits will go to bad state.
+  INTEROP_DYNAMIC_ROLE_SWITCH,
+
+  // Disable role switch for headsets/car-kits
+  // Some car kits allow role switch but when DUT initiates role switch
+  // Remote will go to bad state and its leads to LMP time out.
+  INTEROP_DISABLE_ROLE_SWITCH,
+
+  // Disable role switch for headsets/car-kits
+  // Some car kits initiate a role switch but won't initiate encryption
+  // after role switch complete
+  INTEROP_DISABLE_ROLE_SWITCH_POLICY,
+
+  INTEROP_HFP_1_7_BLACKLIST,
+
+  // Some Carkits are not initiating AVRCP Browse Channel on
+  // seeing DUT's AVRCP version as v1.6. Hence fallback DUT's
+  // AVRCP version to v1.4 for those Carkits
+  INTEROP_STORE_REMOTE_AVRCP_VERSION_1_4,
+
+  // Devices requiring this workaround do not handle Bluetooth PBAP 1.2 version correctly,
+  // leading them to go in bad state. So for better interoperability respond with PBAP 1.1
+  // as supported version.
+  INTEROP_ADV_PBAP_VER_1_1,
+
+  // Honor remote avdtp start, certain carkits send avdt_start along with avrcp
+  // passthrough cmd. If DUT suspends remote start and initiate avdtp start, remote
+  // suspends DUT's start request. So honor remote start for certain devices.
+  INTEROP_REMOTE_AVDTP_START,
+
+  // Devices requiring this workaround do not handle SSR max latency values as mentioned,
+  // in their SDP HID Record properly and lead to connection timeout or lags. To prevent
+  // such scenarios, device requiring this workaorund need to use specific ssr max latency
+  // values.
+  INTEROP_UPDATE_HID_SSR_MAX_LAT,
+
+  END_OF_INTEROP_LIST
+
 } interop_feature_t;
 
 // Check if a given |addr| matches a known interoperability workaround as identified
@@ -145,6 +187,14 @@ bool interop_match_manufacturer(const interop_feature_t feature, uint16_t manufa
 // where more information is not available.
 bool interop_match_vendor_product_ids(const interop_feature_t feature,
         uint16_t vendor_id, uint16_t product_id);
+
+// Check if a given |addr| matches a known interoperability workaround as identified
+// by the |interop_feature_t| enum. This API is used for simple address based lookups
+// where more information is not available. No look-ups or random address resolution
+// are performed on |addr|. If address is matched, max latency for SSR stored for particular
+// remote device is returned.
+bool interop_match_addr_get_max_lat(const interop_feature_t feature,
+        const bt_bdaddr_t *addr, uint16_t *max_lat);
 
 // Add a dynamic interop database entry for a device matching the first |length| bytes
 // of |addr|, implementing the workaround identified by |feature|. |addr| may not be

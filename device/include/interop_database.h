@@ -125,12 +125,29 @@ static const interop_addr_entry_t interop_addr_database[] = {
 
   // Mazda Atenza
   {{{0x04, 0xf8, 0xc2,      0,0,0}}, 3, INTEROP_DISABLE_ABSOLUTE_VOLUME},
-  // HONDA HFT
-  {{{0xA0, 0x14, 0x3D,      0,0,0}}, 3, INTEROP_DISABLE_CONNECTION_AFTER_COLLISION},
+  // Remote not playing back Audio, suspected to be Audio encoder version diff
+  // Beats Solo 3
+  {{{0x20, 0x3c, 0xae,      0,0,0}}, 3, INTEROP_DISABLE_AAC_CODEC},
+  //Apple Airpods Headset
+  {{{0x4c, 0x32, 0x75,      0,0,0}}, 3, INTEROP_DISABLE_AAC_CODEC},
+  // Remote sending 128 as bitrate in place of 128000
+  // Cadillac
+  {{{0x28, 0xA1, 0x83,      0,0,0}}, 3, INTEROP_DISABLE_AAC_CODEC},
+  // Buick Verona
+  {{{0xAC, 0x7A, 0x4D,      0,0,0}}, 3, INTEROP_DISABLE_AAC_CODEC},
+  //Maruthi Brezzai
+  {{{0x28, 0xa1, 0x83,      0,0,0}}, 3, INTEROP_DISABLE_AAC_CODEC},
+  // Parrot Zik2.0
+  {{{0xA0, 0x14, 0x3D,      0,0,0}}, 3, INTEROP_DISABLE_AAC_CODEC},
+
+  // Porsche, Audi Q7
+  {{{0xbc, 0x30, 0x7e,      0,0,0}}, 3, INTEROP_REMOTE_AVDTP_START},
+  // Audi
+  {{{0xa4, 0x08, 0xea,      0,0,0}}, 3, INTEROP_REMOTE_AVDTP_START},
 };
 
 typedef struct {
-  char name[40];
+  char name[249];
   size_t length;
   interop_feature_t feature;
 } interop_name_entry_t;
@@ -167,6 +184,14 @@ static const interop_name_entry_t interop_name_database[] = {
   {"Motorola Keyboard KZ500", 23, INTEROP_REMOVE_HID_DIG_DESCRIPTOR},
   {"Motorola Keyboard KZ500 v122", 28, INTEROP_REMOVE_HID_DIG_DESCRIPTOR},
   {"MB Bluetooth", 12, INTEROP_ADV_AVRCP_VER_1_3},
+
+  // HID Moto KZ500 Keyboard - Problematic SDP digitizer descriptor
+  {"Motorola Keyboard KZ500", 23, INTEROP_REMOVE_HID_DIG_DESCRIPTOR},
+  {"Motorola Keyboard KZ500 v122", 28, INTEROP_REMOVE_HID_DIG_DESCRIPTOR},
+
+  // Honor remote's avdtp start request
+  {"Audi",    4, INTEROP_REMOTE_AVDTP_START},
+  {"Porsche", 7, INTEROP_REMOTE_AVDTP_START},
 };
 
 typedef struct {

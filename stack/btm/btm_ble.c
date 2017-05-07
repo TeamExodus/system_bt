@@ -71,7 +71,7 @@ extern void gatt_notify_enc_cmpl(BD_ADDR bd_addr);
 ** Returns          TRUE if added OK, else FALSE
 **
 *******************************************************************************/
-BOOLEAN BTM_SecAddBleDevice (BD_ADDR bd_addr, BD_NAME bd_name, tBT_DEVICE_TYPE dev_type,
+BOOLEAN BTM_SecAddBleDevice (const BD_ADDR bd_addr, BD_NAME bd_name, tBT_DEVICE_TYPE dev_type,
                              tBLE_ADDR_TYPE addr_type)
 {
     BTM_TRACE_DEBUG ("%s: dev_type=0x%x", __func__, dev_type);
@@ -485,16 +485,56 @@ void BTM_BleOobDataReply(BD_ADDR bd_addr, UINT8 res, UINT8 len, UINT8 *p_data)
     tSMP_STATUS res_smp = (res == BTM_SUCCESS) ? SMP_SUCCESS : SMP_OOB_FAIL;
     tBTM_SEC_DEV_REC  *p_dev_rec = btm_find_dev (bd_addr);
 
-    BTM_TRACE_DEBUG ("BTM_BleOobDataReply");
+    BTM_TRACE_DEBUG ("%s:", __func__);
 
-    if (p_dev_rec == NULL)
-    {
-        BTM_TRACE_ERROR("BTM_BleOobDataReply() to Unknown device");
+    if (p_dev_rec == NULL) {
+        BTM_TRACE_ERROR("%s: Unknown device", __func__);
         return;
     }
 
     p_dev_rec->sec_flags |= BTM_SEC_LE_AUTHENTICATED;
     SMP_OobDataReply(bd_addr, res_smp, len, p_data);
+#endif
+}
+
+/*******************************************************************************
+**
+** Function         BTM_BleSecureConnectionOobDataReply
+**
+** Description      This function is called to provide the OOB data for
+**                  SMP in response to BTM_LE_OOB_REQ_EVT when secure connection
+**                  data is available
+**
+** Parameters:      bd_addr     - Address of the peer device
+**                  p_c         - pointer to Confirmation.
+**                  p_r         - pointer to Randomizer
+**
+*******************************************************************************/
+void BTM_BleSecureConnectionOobDataReply(BD_ADDR bd_addr,
+                                         uint8_t *p_c, uint8_t *p_r)
+{
+#if SMP_INCLUDED == TRUE
+    tBTM_SEC_DEV_REC  *p_dev_rec = btm_find_dev (bd_addr);
+
+    BTM_TRACE_DEBUG ("%s:", __func__);
+
+    if (p_dev_rec == NULL) {
+        BTM_TRACE_ERROR("%s: Unknown device", __func__);
+        return;
+    }
+
+    p_dev_rec->sec_flags |= BTM_SEC_LE_AUTHENTICATED;
+
+    tSMP_SC_OOB_DATA oob;
+    memset(&oob, 0, sizeof(tSMP_SC_OOB_DATA));
+
+    oob.peer_oob_data.present = true;
+    memcpy(&oob.peer_oob_data.randomizer, p_r, BT_OCTET16_LEN);
+    memcpy(&oob.peer_oob_data.commitment, p_c, BT_OCTET16_LEN);
+    oob.peer_oob_data.addr_rcvd_from.type = p_dev_rec->ble.ble_addr_type;
+    memcpy(&oob.peer_oob_data.addr_rcvd_from.bda, bd_addr, sizeof(BD_ADDR));
+
+    SMP_SecureConnectionOobDataReply((uint8_t*)&oob);
 #endif
 }
 
@@ -845,6 +885,8 @@ BOOLEAN BTM_UseLeLink (BD_ADDR bd_addr)
 tBTM_STATUS BTM_SetBleDataLength(BD_ADDR bd_addr, UINT16 tx_pdu_length)
 {
     tACL_CONN *p_acl = btm_bda_to_acl(bd_addr, BT_TRANSPORT_LE);
+    UINT16 tx_time = BTM_BLE_DATA_TX_TIME_MAX_LEGACY;
+
     BTM_TRACE_DEBUG("%s: tx_pdu_length =%d", __FUNCTION__, tx_pdu_length);
 
     if (!controller_get_interface()->supports_ble_packet_extension())
@@ -866,9 +908,11 @@ tBTM_STATUS BTM_SetBleDataLength(BD_ADDR bd_addr, UINT16 tx_pdu_length)
         else if (tx_pdu_length < BTM_BLE_DATA_SIZE_MIN)
             tx_pdu_length =  BTM_BLE_DATA_SIZE_MIN;
 
+        if (controller_get_interface()->get_bt_version()->hci_version >= HCI_PROTO_VERSION_5_0)
+            tx_time = BTM_BLE_DATA_TX_TIME_MAX;
+
         /* always set the TxTime to be max, as controller does not care for now */
-        btsnd_hcic_ble_set_data_length(p_acl->hci_handle, tx_pdu_length,
-                                            BTM_BLE_DATA_TX_TIME_MAX);
+        btsnd_hcic_ble_set_data_length(p_acl->hci_handle, tx_pdu_length, tx_time);
 
         return BTM_SUCCESS;
     }
@@ -970,6 +1014,47 @@ tBTM_SEC_ACTION btm_ble_determine_security_act(BOOLEAN is_originator, BD_ADDR bd
 
 /*******************************************************************************
 **
+** Function         BTM_SetBlePhy
+**
+** Description      This function is to set BLE tx and rx PHY
+**
+** Returns          BTM_SUCCESS if success; otherwise failed.
+**
+*******************************************************************************/
+tBTM_STATUS BTM_SetBlePhy(BD_ADDR bd_addr, UINT8 all_phy, UINT8 tx_phy,
+                          UINT8 rx_phy, UINT16 phy_options)
+{
+    tACL_CONN *p_acl = btm_bda_to_acl(bd_addr, BT_TRANSPORT_LE);
+    BTM_TRACE_DEBUG("%s: all_phy=0x%0x, tx_phy=0x%0x, rx_phy=0x%0x",
+                    __func__, all_phy, tx_phy, rx_phy);
+
+    if (!controller_get_interface()->supports_ble_two_mbps_rate())
+    {
+        BTM_TRACE_ERROR("%s failed, request not supported", __func__);
+        return BTM_ILLEGAL_VALUE;
+    }
+
+    if ((p_acl != NULL) && (!HCI_LE_TWO_MBPS_SUPPORTED(p_acl->peer_le_features)))
+    {
+        BTM_TRACE_ERROR("%s failed, peer does not support request", __func__);
+        return BTM_ILLEGAL_VALUE;
+    }
+
+    if (p_acl != NULL)
+    {
+        btsnd_hcic_ble_set_data_rate (p_acl->hci_handle, all_phy, tx_phy,
+                                      rx_phy, phy_options);
+        return BTM_SUCCESS;
+    }
+    else
+    {
+        BTM_TRACE_ERROR("%s: Wrong mode: no LE link exist or LE not supported",__func__);
+        return BTM_WRONG_MODE;
+    }
+}
+
+/*******************************************************************************
+**
 ** Function         btm_ble_start_sec_check
 **
 ** Description      This function is to check and set the security required for
@@ -1040,6 +1125,30 @@ BOOLEAN btm_ble_start_sec_check(BD_ADDR bd_addr, UINT16 psm, BOOLEAN is_originat
     BTM_SetEncryption(bd_addr, BT_TRANSPORT_LE, p_callback, p_ref_data, ble_sec_act);
 
     return FALSE;
+}
+
+/*******************************************************************************
+**
+** Function         BTM_SetDefaultBlePhy
+**
+** Description      This function is to set default BLE tx and rx PHY
+**
+** Returns          BTM_SUCCESS if success; otherwise failed.
+**
+*******************************************************************************/
+tBTM_STATUS BTM_SetDefaultBlePhy(UINT8 all_phy, UINT8 tx_phy, UINT8 rx_phy)
+{
+    BTM_TRACE_DEBUG("%s: all_phy=0x%0x, tx_phy=0x%0x, rx_phy=0x%0x",
+                    __func__, all_phy, tx_phy, rx_phy);
+
+    if (!controller_get_interface()->supports_ble_two_mbps_rate())
+    {
+        BTM_TRACE_ERROR("%s failed, request not supported", __func__);
+        return BTM_ILLEGAL_VALUE;
+    }
+
+    btsnd_hcic_ble_set_default_data_rate (all_phy, tx_phy, rx_phy);
+    return BTM_SUCCESS;
 }
 
 /*******************************************************************************
@@ -1798,7 +1907,7 @@ UINT8 btm_ble_br_keys_req(tBTM_SEC_DEV_REC *p_dev_rec, tBTM_LE_IO_REQ *p_data)
 ** Returns          void
 **
 *******************************************************************************/
-static void btm_ble_resolve_random_addr_on_conn_cmpl(void * p_rec, void *p_data)
+static void btm_ble_resolve_random_addr_on_conn_cmpl(void * p_rec, void *p_data, BOOLEAN extended)
 {
     UINT8   *p = (UINT8 *)p_data;
     tBTM_SEC_DEV_REC    *match_rec = (tBTM_SEC_DEV_REC *) p_rec;
@@ -1808,6 +1917,7 @@ static void btm_ble_resolve_random_addr_on_conn_cmpl(void * p_rec, void *p_data)
     BD_ADDR     local_rpa, peer_rpa;
     UINT16      conn_interval, conn_latency, conn_timeout;
     BOOLEAN     match = FALSE;
+    UNUSED(extended);
 
     --p;
     STREAM_TO_UINT8(sub_code, p);
@@ -1974,7 +2084,7 @@ void btm_ble_conn_complete(UINT8 *p, UINT16 evt_len, BOOLEAN enhanced)
            the device has been paired */
         if (!match && BTM_BLE_IS_RESOLVE_BDA(bda))
         {
-            btm_ble_resolve_random_addr(bda, btm_ble_resolve_random_addr_on_conn_cmpl, p_data);
+            btm_ble_resolve_random_addr(bda, btm_ble_resolve_random_addr_on_conn_cmpl, p_data, FALSE);
         }
         else
 #endif
@@ -1989,16 +2099,16 @@ void btm_ble_conn_complete(UINT8 *p, UINT16 evt_len, BOOLEAN enhanced)
             l2cble_conn_comp (handle, role, bda, bda_type, conn_interval,
                               conn_latency, conn_timeout);
 
-#if (BLE_PRIVACY_SPT == TRUE)
-            if (enhanced)
-            {
-                btm_ble_refresh_local_resolvable_private_addr(bda, local_rpa);
-
-                if (peer_addr_type & BLE_ADDR_TYPE_ID_BIT)
-                    btm_ble_refresh_peer_resolvable_private_addr(bda, peer_rpa, BLE_ADDR_RANDOM);
-            }
-#endif
         }
+#if (BLE_PRIVACY_SPT == TRUE)
+        if (enhanced)
+        {
+            btm_ble_refresh_local_resolvable_private_addr(bda, local_rpa);
+
+            if (peer_addr_type & BLE_ADDR_TYPE_ID_BIT)
+                btm_ble_refresh_peer_resolvable_private_addr(bda, peer_rpa, BLE_ADDR_RANDOM);
+        }
+#endif
     }
     else
     {
@@ -2088,7 +2198,7 @@ UINT8 btm_proc_smp_cback(tSMP_EVT event, BD_ADDR bd_addr, tSMP_EVT_DATA *p_data)
                    (*btm_cb.api.p_le_callback) (event, bd_addr, (tBTM_LE_EVT_DATA *)p_data);
                 }
 
-                if (event == SMP_COMPLT_EVT)
+                if (event == SMP_COMPLT_EVT && !p_data->cmplt.smp_over_br)
                 {
                     BTM_TRACE_DEBUG ("evt=SMP_COMPLT_EVT before update sec_level=0x%x sec_flags=0x%x", p_data->cmplt.sec_level , p_dev_rec->sec_flags );
 
@@ -2121,6 +2231,7 @@ UINT8 btm_proc_smp_cback(tSMP_EVT event, BD_ADDR bd_addr, tSMP_EVT_DATA *p_data)
                     {
                         BTM_TRACE_DEBUG ("Pairing failed - prepare to remove ACL");
                         l2cu_start_post_bond_timer(p_dev_rec->ble_hci_handle);
+                        GENERATE_VENDOR_LOGS();
                     }
 #endif
 
@@ -2686,6 +2797,47 @@ void btm_ble_reset_id( void )
     {
         BTM_TRACE_DEBUG("Generating IR failed.");
     }
+}
+
+/*******************************************************************************
+**
+** Function         btm_ble_set_random_address
+**
+** Description      This function set a random address to local controller.
+**                  It also temporarily disable scans and adv before sending
+**                  the command to the controller
+**
+** Returns          void
+**
+*******************************************************************************/
+void btm_ble_set_random_address(BD_ADDR random_bda)
+{
+    tBTM_LE_RANDOM_CB *p_cb = &btm_cb.ble_ctr_cb.addr_mgnt_cb;
+    tBTM_BLE_CB *p_ble_cb = &btm_cb.ble_ctr_cb;
+    BOOLEAN     adv_mode = btm_cb.ble_ctr_cb.inq_var.adv_mode;
+
+    BTM_TRACE_DEBUG ("%s", __func__);
+    if (btm_ble_get_conn_st() == BLE_DIR_CONN)
+    {
+        BTM_TRACE_ERROR("%s: Cannot set random address. Direct conn ongoing", __func__);
+        return;
+    }
+
+    if (adv_mode  == BTM_BLE_ADV_ENABLE)
+        btsnd_hcic_ble_set_adv_enable (BTM_BLE_ADV_DISABLE);
+    if (BTM_BLE_IS_SCAN_ACTIVE(p_ble_cb->scan_activity))
+        btm_ble_stop_scan();
+    btm_ble_suspend_bg_conn();
+
+    memcpy(p_cb->private_addr, random_bda, BD_ADDR_LEN);
+    btsnd_hcic_ble_set_random_addr(p_cb->private_addr);
+
+    if (adv_mode  == BTM_BLE_ADV_ENABLE)
+        btsnd_hcic_ble_set_adv_enable (BTM_BLE_ADV_ENABLE);
+    if (BTM_BLE_IS_SCAN_ACTIVE(p_ble_cb->scan_activity))
+        btm_ble_start_scan();
+    btm_ble_resume_bg_conn();
+
 }
 
     #if BTM_BLE_CONFORMANCE_TESTING == TRUE
